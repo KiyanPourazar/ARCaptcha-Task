@@ -60,6 +60,7 @@ class BotRunner:
             login_wait_timeout=self.settings.login_wait_timeout,
             stealth=self.settings.bot_stealth,
             humanize_delays=self.settings.humanize_delays,
+            driver_mode=(self.settings.driver_mode or "uc").lower(),
         )
 
         try:

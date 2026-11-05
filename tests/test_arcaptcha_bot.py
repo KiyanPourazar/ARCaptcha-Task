@@ -26,6 +26,8 @@ def _context(**overrides) -> BotContext:
         login_wait_timeout=2,
         stealth=False,
         humanize_delays=False,
+        # Unit tests exercise the classic WebDriver path with mocks.
+        driver_mode="remote",
     )
     base.update(overrides)
     return BotContext(**base)

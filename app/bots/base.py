@@ -28,6 +28,9 @@ class BotContext:
     login_wait_timeout: int = 20
     stealth: bool = True
     humanize_delays: bool = True
+    # "uc" = SeleniumBase UC Mode (preferred against ArCaptcha blocking)
+    # "remote" = classic Remote/local WebDriver
+    driver_mode: str = "uc"
     extras: dict[str, Any] = field(default_factory=dict)
 
 

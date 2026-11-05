@@ -213,17 +213,49 @@ pytest -q
 
 ## Bonus: reducing CAPTCHA blocking
 
-In this demo environment, checkbox challenges often auto-pass for low-friction traffic but can escalate to a visual challenge when automation fingerprints are obvious.
+ArCaptcha on `demo.arcaptcha.co` actively fingerprints Selenium. With the Docker **remote** WebDriver path, runs commonly end as:
 
-**Approach (enabled by default via `BOT_STEALTH=true` + `HUMANIZE_DELAYS=true`):**
+`Blocked! Are you robot? Please refresh the page and try again`
 
-- Hide `navigator.webdriver` and related automation flags (CDP init script)
-- Disable Chrome automation extension switches
-- Realistic desktop user-agent + viewport
-- Short randomized delays before checkbox / submit
-- Prefer Headful mode when measuring human-like success rates
+**Approach used here (`DRIVER_MODE=uc`):**
 
-**Evidence:** run N Headful attempts from the UI or API and compare `blocked` vs `success` counts in `/api/runs`. Record the ratio in your submission notes. Accurate `blocked` / `failed` reporting remains mandatory even when the rate improves.
+1. **SeleniumBase UC Mode** (undetected-chromedriver lineage): patch chromedriver, attach after Chrome starts, and `uc_click` the checkbox while chromedriver is briefly disconnected
+2. Keep classic stealth flags for the remote path (`BOT_STEALTH`, humanized delays, Tehran TZ in Compose)
+3. Prefer **headed/Headful** over headless for UC trials
+4. Persist `challenge_id` whenever obtained, and still report `blocked` / `failed` accurately
+
+**How to run the lower-block path (desktop):**
+
+```bash
+cp .env.example .env
+# DRIVER_MODE=uc
+# SELENIUM_REMOTE_URL=   (empty)
+pip install -r requirements.txt
+mkdir -p data
+export DATABASE_URL=sqlite:///./data/runs.db
+export SELENIUM_REMOTE_URL=
+export DRIVER_MODE=uc
+uvicorn app.main:app --port 8080
+```
+
+Then start runs as **Headful** in the UI.
+
+**Bench helper:**
+
+```bash
+DRIVER_MODE=uc python scripts/bench_block_rate.py --runs 5 --headed
+DRIVER_MODE=remote SELENIUM_REMOTE_URL=http://localhost:4444/wd/hub \
+  python scripts/bench_block_rate.py --runs 5 --headed
+```
+
+**Evidence collected during development (demo.arcaptcha.co):**
+
+| Driver | Immediate `Blocked! Are you robot?` |
+| --- | --- |
+| Docker Selenium Grid (remote, headful/headless) | Consistently yes |
+| SeleniumBase UC Mode on macOS desktop (headed) | Not observed in repeated trials; `challenge_id` appeared after `uc_click` |
+
+Docker Compose still defaults to `DRIVER_MODE=remote` for reproducible reviewer setup with noVNC. Use local UC Mode when optimizing anti-block rate. Accurate blocked/failed reporting remains mandatory.
 
 ## Troubleshooting
 

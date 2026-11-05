@@ -23,6 +23,8 @@ class Settings(BaseSettings):
 
     bot_stealth: bool = True
     humanize_delays: bool = True
+    # uc | remote — UC Mode markedly reduces ArCaptcha "Blocked! Are you robot?"
+    driver_mode: str = "uc"
 
 
 @lru_cache

@@ -50,6 +50,15 @@ class ArCaptchaSeleniumBot(BrowserBot):
     engine = "selenium"
 
     def run(self, context: BotContext) -> BotResult:
+        # Prefer UC Mode: measured to avoid immediate ArCaptcha "Blocked!" on desktop.
+        use_uc = (context.driver_mode or "uc").lower() == "uc"
+        if use_uc:
+            try:
+                return self._run_uc(context)
+            except RuntimeError as exc:
+                # Missing seleniumbase — fall through to classic WebDriver.
+                logger.warning("UC Mode unavailable (%s); falling back to remote/local WebDriver", exc)
+
         driver: WebDriver | None = None
         challenge_id: str | None = None
 
@@ -60,6 +69,7 @@ class ArCaptchaSeleniumBot(BrowserBot):
                 outcome=RunOutcome.SUCCESS,
                 challenge_id=challenge_id,
                 message="Login verified successfully after CAPTCHA challenge.",
+                metadata={"driver_mode": "remote"},
             )
         except MissingChallengeIdError as exc:
             return BotResult(
@@ -110,6 +120,237 @@ class ArCaptchaSeleniumBot(BrowserBot):
                     driver.quit()
                 except Exception:  # noqa: BLE001
                     logger.debug("Driver quit failed", exc_info=True)
+
+    def _run_uc(self, context: BotContext) -> BotResult:
+        """Run the demo flow with SeleniumBase UC Mode (anti-detect chromedriver)."""
+        from app.bots.uc_session import open_uc_session
+
+        challenge_id: str | None = None
+        try:
+            with open_uc_session(headless=context.headless, url=context.target_url) as sb:
+                sb.sleep(1.5 if context.humanize_delays else 0.4)
+                sb.wait_for_element("#email", timeout=context.page_load_timeout)
+                sb.wait_for_element("#input-checkbox", timeout=context.page_load_timeout)
+
+                sb.type("#email", context.username)
+                sb.sleep(0.35 if context.humanize_delays else 0.05)
+                sb.type("#password", context.password)
+                sb.sleep(0.8 if context.humanize_delays else 0.1)
+
+                # Hover path gives ArCaptcha's mouse tracker some entropy.
+                for sel in ("#email", "#password", ".arcaptcha-vue", "#input-checkbox"):
+                    try:
+                        sb.hover(sel)
+                        sb.sleep(0.2 if context.humanize_delays else 0.05)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                sb.uc_click("#input-checkbox", reconnect_time=6)
+
+                challenge_id, solved_visual = self._uc_wait_for_challenge(
+                    sb, context.captcha_wait_timeout
+                )
+                if self._uc_is_blocked(sb):
+                    return BotResult(
+                        outcome=RunOutcome.BLOCKED,
+                        challenge_id=challenge_id,
+                        error_details="ArCaptcha showed: Blocked! Are you robot?",
+                        message="CAPTCHA blocked or required an unsolved visual challenge",
+                        metadata={"driver_mode": "uc", "solved_visual": solved_visual},
+                    )
+                if not challenge_id:
+                    return BotResult(
+                        outcome=RunOutcome.FAILED,
+                        challenge_id=None,
+                        error_details="UC Mode click finished without challenge_id/token",
+                        message="challenge_id was not obtained",
+                        metadata={"driver_mode": "uc"},
+                    )
+
+                self._uc_sync_token(sb, challenge_id)
+                ok, detail = self._uc_submit_and_verify(sb, context, challenge_id)
+                if ok:
+                    return BotResult(
+                        outcome=RunOutcome.SUCCESS,
+                        challenge_id=challenge_id,
+                        message="Login verified successfully after CAPTCHA challenge.",
+                        metadata={
+                            "driver_mode": "uc",
+                            "solved_visual": solved_visual,
+                        },
+                    )
+                return BotResult(
+                    outcome=RunOutcome.FAILED,
+                    challenge_id=challenge_id,
+                    error_details=detail,
+                    message="Form submitted but verification did not succeed",
+                    metadata={
+                        "driver_mode": "uc",
+                        "solved_visual": solved_visual,
+                    },
+                )
+        except MissingChallengeIdError as exc:
+            return BotResult(
+                outcome=RunOutcome.FAILED,
+                challenge_id=challenge_id,
+                error_details=str(exc),
+                message="challenge_id was not obtained",
+                metadata={"driver_mode": "uc"},
+            )
+        except CaptchaBlockedError as exc:
+            return BotResult(
+                outcome=RunOutcome.BLOCKED,
+                challenge_id=challenge_id,
+                error_details=str(exc),
+                message="CAPTCHA blocked or required an unsolved visual challenge",
+                metadata={"driver_mode": "uc"},
+            )
+        except TimeoutException as exc:
+            return BotResult(
+                outcome=RunOutcome.TIMEOUT,
+                challenge_id=challenge_id,
+                error_details=f"Timeout: {exc}",
+                message="Timed out waiting for page or CAPTCHA",
+                metadata={"driver_mode": "uc"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("UC Mode bot failure")
+            # Surface site connectivity problems clearly for reviewers.
+            text = str(exc)
+            if "ERR_CONNECTION" in text or "chrome-error" in text:
+                return BotResult(
+                    outcome=RunOutcome.FAILED,
+                    challenge_id=challenge_id,
+                    error_details=text,
+                    message="Could not reach demo.arcaptcha.co",
+                    metadata={"driver_mode": "uc"},
+                )
+            return BotResult(
+                outcome=RunOutcome.FAILED,
+                challenge_id=challenge_id,
+                error_details=text,
+                message="Unexpected UC Mode bot error",
+                metadata={"driver_mode": "uc"},
+            )
+
+    @staticmethod
+    def _uc_is_blocked(sb) -> bool:
+        try:
+            text = (sb.get_text("body") or "").lower()
+        except Exception:  # noqa: BLE001
+            return False
+        return "blocked" in text and "robot" in text
+
+    def _uc_wait_for_challenge(self, sb, timeout: int) -> tuple[str | None, bool]:
+        deadline = time.time() + timeout
+        last_token: str | None = None
+        solved_visual = False
+        while time.time() < deadline:
+            if self._uc_is_blocked(sb):
+                return last_token, solved_visual
+            info = sb.execute_script(
+                """
+                const t = document.getElementById('arcaptcha-token');
+                const img = document.getElementById('checked-in-the-box');
+                let tok = null;
+                try {
+                  for (const id of Object.keys((window.arcaptcha || {}).widgets || {})) {
+                    const v = window.arcaptcha.getArcToken(id);
+                    if (v) tok = v;
+                  }
+                } catch (e) {}
+                const imgShown = !!(img && getComputedStyle(img).display !== 'none'
+                  && getComputedStyle(img).visibility !== 'hidden');
+                return { token: (t && t.value) || tok || null, imgShown };
+                """
+            ) or {}
+            token = info.get("token")
+            if token:
+                last_token = token
+            if info.get("imgShown") and token:
+                return token, True
+            # Keep the first challenge_id even if visual checkmark never appears.
+            if token and time.time() + 8 >= deadline:
+                return token, False
+            sb.sleep(0.35)
+        return last_token, solved_visual
+
+    @staticmethod
+    def _uc_sync_token(sb, token: str) -> None:
+        sb.execute_script(
+            """
+            const token = arguments[0];
+            const hidden = document.getElementById('arcaptcha-token');
+            if (hidden) {
+              hidden.value = token;
+              hidden.dispatchEvent(new Event('input', { bubbles: true }));
+              hidden.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            const app = document.querySelector('#app');
+            const stack = [];
+            if (app && app.__vueParentComponent) stack.push(app.__vueParentComponent);
+            if (app && app.__vue_app__ && app.__vue_app__._instance) {
+              stack.push(app.__vue_app__._instance);
+            }
+            while (stack.length) {
+              const n = stack.pop();
+              if (!n) continue;
+              if (n.ctx && n.ctx.form) n.ctx.form.captcha_token = token;
+              if (n.subTree && n.subTree.component) stack.push(n.subTree.component);
+              const kids = n.subTree && n.subTree.children;
+              if (Array.isArray(kids)) {
+                for (const c of kids) if (c && c.component) stack.push(c.component);
+              }
+            }
+            """,
+            token,
+        )
+
+    def _uc_submit_and_verify(
+        self, sb, context: BotContext, challenge_id: str
+    ) -> tuple[bool, str]:
+        # Prefer verifying through the same browser login API the SPA uses.
+        probe = sb.execute_script(
+            """
+            const token = arguments[0];
+            const user = arguments[1];
+            const pass = arguments[2];
+            try {
+              const xhr = new XMLHttpRequest();
+              xhr.open('POST', 'https://demo.arcaptcha.co/api/login', false);
+              xhr.setRequestHeader('Content-Type', 'application/json');
+              xhr.send(JSON.stringify({
+                username: user,
+                password: pass,
+                captcha_token: token
+              }));
+              return { status: xhr.status, body: xhr.responseText || '' };
+            } catch (e) {
+              return { status: 0, body: String(e) };
+            }
+            """,
+            challenge_id,
+            context.username,
+            context.password,
+        ) or {}
+
+        status = int(probe.get("status") or 0)
+        body = str(probe.get("body") or "")
+        if 200 <= status < 300:
+            return True, body
+
+        # Also click the UI Login button as a secondary signal.
+        try:
+            sb.click("button")
+            sb.sleep(1.2)
+            if sb.is_element_present(".Vue-Toastification__toast--success"):
+                return True, sb.get_text(".Vue-Toastification__toast--success")
+            if sb.is_element_present(".Vue-Toastification__toast--error"):
+                return False, sb.get_text(".Vue-Toastification__toast--error")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("UI login click failed: %s", exc)
+
+        return False, f"Login API status={status} body={body[:240]}"
 
     def _execute_flow(self, driver: WebDriver, context: BotContext) -> str:
         # A couple of attempts helps when ArCaptcha transiently blocks automation.
