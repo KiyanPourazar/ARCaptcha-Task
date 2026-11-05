@@ -14,4 +14,4 @@ data/*.png
 *.log
 .DS_Store
 .idea/
-.vscode/
+.vscode/downloaded_files/
