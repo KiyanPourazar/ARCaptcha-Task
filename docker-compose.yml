@@ -1,0 +1,44 @@
+services:
+  chrome:
+    image: selenium/standalone-chrome:4.27.0
+    shm_size: "2gb"
+    ports:
+      # noVNC — watch Headful browser sessions in a normal web browser
+      - "7900:7900"
+    environment:
+      SE_NODE_MAX_SESSIONS: "2"
+      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
+      SE_VNC_NO_PASSWORD: "1"
+      SE_SCREEN_WIDTH: "1440"
+      SE_SCREEN_HEIGHT: "900"
+      SE_SCREEN_DEPTH: "24"
+      # Align browser clock/locale with the demo audience (Iran)
+      TZ: Asia/Tehran
+      LANG: en_US.UTF-8
+      LANGUAGE: en_US:en
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4444/status || curl -fsS http://localhost:4444/wd/hub/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  platform:
+    build: .
+    ports:
+      # Host 8080 avoids clashes with other local services already on 8000
+      - "8080:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:////data/runs.db
+      SELENIUM_REMOTE_URL: http://chrome:4444/wd/hub
+    volumes:
+      # Persist run history across container restarts
+      - bot_data:/data
+    depends_on:
+      chrome:
+        condition: service_healthy
+
+volumes:
+  bot_data:

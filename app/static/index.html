@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bot Platform</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="hero">
+      <p class="brand">Bot Platform</p>
+      <h1>Run and monitor browser bots</h1>
+      <p class="lede">This panel only <em>controls</em> the bot. When you press Start, Selenium opens <strong>demo.arcaptcha.co</strong> inside the Chrome container, clicks the CAPTCHA, logs in, and saves the result here.</p>
+    </header>
+
+    <main class="layout">
+      <section class="panel" aria-labelledby="launch-heading">
+        <div class="panel-head">
+          <h2 id="launch-heading">Launch</h2>
+          <p>Available bots are loaded from the registry.</p>
+        </div>
+
+        <label class="field">
+          <span>Bot</span>
+          <select id="bot-select"></select>
+        </label>
+
+        <fieldset class="mode-field">
+          <legend>Browser mode</legend>
+          <label class="radio">
+            <input type="radio" name="browser-mode" value="headless" checked />
+            <span>Headless</span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="browser-mode" value="headful" />
+            <span>Headful</span>
+          </label>
+        </fieldset>
+
+        <p class="hint" id="mode-hint">
+          <strong>Headless</strong>: browser is invisible (you will not see the site on :7900).<br/>
+          <strong>Headful</strong>: open
+          <a href="http://localhost:7900/?autoconnect=1&resize=scale" target="_blank" rel="noopener">localhost:7900</a>,
+          click Connect, <em>then</em> Start run here — you should see demo.arcaptcha.co open automatically.
+          Prefer Headful; ArCaptcha often blocks plain Headless automation.
+        </p>
+
+        <button id="run-btn" type="button" class="primary">Start run</button>
+        <p id="launch-status" class="status" role="status"></p>
+      </section>
+
+      <section class="panel wide" aria-labelledby="history-heading">
+        <div class="panel-head row">
+          <div>
+            <h2 id="history-heading">Run history</h2>
+            <p>Persisted across container restarts via the mounted SQLite volume.</p>
+          </div>
+          <button id="refresh-btn" type="button" class="ghost">Refresh</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Started</th>
+                <th>Bot</th>
+                <th>Mode</th>
+                <th>Status</th>
+                <th>challenge_id</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="runs-body">
+              <tr><td colspan="6" class="empty">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
