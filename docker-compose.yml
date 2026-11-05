@@ -1,47 +1,40 @@
 services:
-  chrome:
-    image: selenium/standalone-chrome:4.27.0
-    shm_size: "2gb"
-    ports:
-      # noVNC — watch Headful browser sessions in a normal web browser
-      - "7900:7900"
-    environment:
-      SE_NODE_MAX_SESSIONS: "2"
-      SE_NODE_OVERRIDE_MAX_SESSIONS: "true"
-      SE_VNC_NO_PASSWORD: "1"
-      SE_SCREEN_WIDTH: "1440"
-      SE_SCREEN_HEIGHT: "900"
-      SE_SCREEN_DEPTH: "24"
-      # Align browser clock/locale with the demo audience (Iran)
-      TZ: Asia/Tehran
-      LANG: en_US.UTF-8
-      LANGUAGE: en_US:en
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:4444/status || curl -fsS http://localhost:4444/wd/hub/status || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 20s
-
   platform:
     build: .
+    # Google Chrome deb is amd64; Apple Silicon runs via emulation.
+    platform: linux/amd64
     ports:
       # Host 8080 avoids clashes with other local services already on 8000
       - "8080:8000"
+      # noVNC — watch Headful UC Chrome sessions
+      - "7900:7900"
     env_file:
       - .env
     environment:
       DATABASE_URL: sqlite:////data/runs.db
-      SELENIUM_REMOTE_URL: http://chrome:4444/wd/hub
-      # Grid path stays on classic remote WebDriver inside Compose.
-      # For higher anti-block success, run locally with DRIVER_MODE=uc (see README).
-      DRIVER_MODE: remote
+      # Same anti-detect path as desktop local: UC Mode inside the container.
+      # Empty remote URL so the bot never falls back to classic Grid WebDriver.
+      SELENIUM_REMOTE_URL: ""
+      DRIVER_MODE: uc
+      DISPLAY: ":99"
+      DOCKER_UC_DISPLAY: ":99"
+      CHROME_BINARY: /usr/bin/google-chrome-stable
+      TZ: Asia/Tehran
+      LANG: en_US.UTF-8
+      LANGUAGE: en_US:en
+      SCREEN_WIDTH: "1440"
+      SCREEN_HEIGHT: "900"
+      SCREEN_DEPTH: "24"
+    shm_size: "2gb"
     volumes:
       # Persist run history across container restarts
       - bot_data:/data
-    depends_on:
-      chrome:
-        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
 
 volumes:
   bot_data:

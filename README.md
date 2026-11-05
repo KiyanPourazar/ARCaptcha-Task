@@ -2,7 +2,7 @@
 
 Platform for defining, running, and monitoring browser bots.
 
-The first bot targets [demo.arcaptcha.co](https://demo.arcaptcha.co) with **Selenium**:
+The first bot targets [demo.arcaptcha.co](https://demo.arcaptcha.co) with **Selenium** + **UC Mode**:
 
 1. Opens the demo page  
 2. Fills username / password (`demo` / `demo` by default)  
@@ -14,9 +14,11 @@ The first bot targets [demo.arcaptcha.co](https://demo.arcaptcha.co) with **Sele
 
 Failed / blocked / timeout runs stay visible in history, including any `challenge_id` already obtained.
 
+**Local and server use the same driver path:** `DRIVER_MODE=uc` (SeleniumBase UC Mode). Docker Compose embeds Chrome + Xvfb + noVNC so the server path is not limited to classic Selenium Grid fingerprinting.
+
 ---
 
-## Quick start (Docker — reviewer path)
+## Quick start (Docker — local or server)
 
 ```bash
 git clone https://github.com/KiyanPourazar/ARCaptcha-Task.git
@@ -36,6 +38,12 @@ curl -s http://localhost:8080/api/health
 # → {"status":"ok"}
 ```
 
+On a remote server, open the UI on `:8080`, or tunnel Headful viewing:
+
+```bash
+ssh -L 8080:localhost:8080 -L 7900:localhost:7900 user@server
+```
+
 Stop:
 
 ```bash
@@ -44,15 +52,18 @@ docker compose down
 
 History is kept in the `bot_data` volume across restarts. Wipe it with `docker compose down -v`.
 
-> **Note on ArCaptcha + Docker:** containerized Chrome is often fingerprint-blocked (`Blocked! Are you robot?`).  
-> The platform still records that honestly as `blocked`.  
-> For a higher success rate on the full login flow, use the **UC Mode desktop path** below.
+### Run a successful flow in Docker
+
+1. Open http://localhost:8080  
+2. Open http://localhost:7900 → **Connect** (optional, for watching)  
+3. Choose **Headful** → **Start run**  
+4. Watch checkbox / slider on noVNC; history should move to `success` when login verifies  
+
+ArCaptcha can still block some sessions (fingerprint / network). Retries and Headful usually fare better than Headless.
 
 ---
 
-## Recommended path for successful end-to-end runs (UC Mode)
-
-This path uses SeleniumBase **UC Mode** (anti-detect) + local Chrome, and includes automatic slider-puzzle solving.
+## Local desktop (without Docker)
 
 Requirements: Python 3.11+, Google Chrome, network access to `demo.arcaptcha.co` and `*.arcaptcha.ir`.
 
@@ -76,8 +87,7 @@ export DATABASE_URL=sqlite:///./data/runs.db
 uvicorn app.main:app --host 0.0.0.0 --port 8080
 ```
 
-Open http://localhost:8080 → choose **Headful** → **Start run**.
-
+Open http://localhost:8080 → **Headful** → **Start run**.  
 A real Chrome window opens on the desktop (no need for port 7900).
 
 ---
@@ -98,9 +108,9 @@ Stored per run: run ID, bot id/name, browser mode, start/end times, `challenge_i
 | --- | --- |
 | Docker Headful | Open http://localhost:7900 → Connect → then Start run in the UI |
 | Docker on a server | `ssh -L 7900:localhost:7900 user@server` then open local `:7900` |
-| UC Mode local | Chrome window appears on the host display |
+| Local UC (no Docker) | Chrome window appears on the host display |
 
-Headless Docker runs are invisible on `:7900` (expected).
+Headless Docker runs use a private Xvfb and are not shown on `:7900` (expected).
 
 ---
 
@@ -113,13 +123,14 @@ Copy `.env.example` → `.env`. Secrets stay out of git.
 | `BOT_USERNAME` / `BOT_PASSWORD` | `demo` / `demo` | Demo credentials |
 | `TARGET_URL` | `https://demo.arcaptcha.co` | Bot target |
 | `DATABASE_URL` | `sqlite:////data/runs.db` | SQLite path (Compose volume) |
-| `SELENIUM_REMOTE_URL` | `http://chrome:4444/wd/hub` | Remote WebDriver; leave empty for local UC |
-| `DRIVER_MODE` | `uc` in example / `remote` in Compose | `uc` or `remote` |
-| `BOT_STEALTH` | `true` | Anti-automation Chrome flags |
+| `SELENIUM_REMOTE_URL` | empty | Only for classic Grid; leave empty with UC |
+| `DRIVER_MODE` | `uc` | `uc` (recommended) or `remote` |
+| `CHROME_BINARY` | auto / Compose sets path | Optional Chrome binary override |
+| `BOT_STEALTH` | `true` | Anti-automation Chrome flags (remote path) |
 | `HUMANIZE_DELAYS` | `true` | Small random pauses |
 | `PAGE_LOAD_TIMEOUT` / `CAPTCHA_WAIT_TIMEOUT` / `LOGIN_WAIT_TIMEOUT` | see `.env.example` | Timeouts (seconds) |
 
-Compose forces `DRIVER_MODE=remote` and `SELENIUM_REMOTE_URL=http://chrome:4444/wd/hub`.
+Compose sets `DRIVER_MODE=uc`, clears `SELENIUM_REMOTE_URL`, and runs Chrome inside the `platform` container (same anti-detect stack as local).
 
 ---
 
@@ -127,9 +138,9 @@ Compose forces `DRIVER_MODE=remote` and `SELENIUM_REMOTE_URL=http://chrome:4444/
 
 ```
 UI / API  →  BotRunner  →  BotRegistry  →  BrowserBot implementations
-                ↓                              ↓
-             SQLite                      Selenium / UC Mode
-          (Docker volume)
+   ↓                              ↓
+SQLite                      Selenium / UC Mode
+(Docker volume)
 ```
 
 | Piece | Role |
@@ -196,15 +207,16 @@ ArCaptcha fingerprints automation. Measured behavior during development:
 
 | Driver | Typical result |
 | --- | --- |
-| Docker Selenium Grid (`DRIVER_MODE=remote`) | Often `Blocked! Are you robot?` |
-| UC Mode local headed (`DRIVER_MODE=uc`) | Checkbox + slider puzzle can complete; login verified with `You are logged in successfully!` |
+| Classic Selenium Grid (`DRIVER_MODE=remote`) | Often `Blocked! Are you robot?` |
+| UC Mode headed / Xvfb (`DRIVER_MODE=uc`) — local **and** Docker | Checkbox + slider can complete; login verified with `You are logged in successfully!` |
 
 Techniques:
 
 - SeleniumBase UC Mode (`uc_click`, chromedriver disconnect during critical clicks)
 - Slider puzzle solve via image edge-correlation + drag of `.draggable`
 - Stealth Chrome flags + humanized delays
-- Prefer Headful / headed over headless
+- Prefer Headful / headed (or Xvfb) over Chrome `--headless`
+- Docker runs UC Chrome in-container (not remote Grid) so server matches local
 
 Bench helper:
 
@@ -220,8 +232,8 @@ Blocked/failed attempts are still reported accurately.
 
 | OS | Arch | Notes |
 | --- | --- | --- |
-| Linux | x86_64 / amd64 | Primary |
-| macOS | amd64 / arm64 | Docker Desktop; Chrome image may emulate on Apple Silicon |
+| Linux | x86_64 / amd64 | Primary server target |
+| macOS | amd64 / arm64 | Docker Desktop; Compose pins `linux/amd64` for Chrome |
 | Windows | amd64 | Docker Desktop + WSL2 recommended |
 
 Needs: Docker Compose v2 **or** Python 3.11+ with Chrome, plus HTTPS access to the ArCaptcha demo endpoints.
@@ -233,15 +245,14 @@ Needs: Docker Compose v2 **or** Python 3.11+ with Chrome, plus HTTPS access to t
 | Symptom | What to do |
 | --- | --- |
 | Port `8000` already in use | Compose maps UI to **8080** |
-| Always `blocked` in Docker | Expected often; try UC Mode local Headful |
+| Still `blocked` occasionally | Retry Headful; check VPN/network to `*.arcaptcha.ir` |
 | Site / widget timeout | Check VPN/network to `demo.arcaptcha.co` and `*.arcaptcha.ir` |
 | Headful blank on `:7900` | Connect noVNC first, then start a **Headful** run |
 | Empty history after restart | Do not use `docker compose down -v` |
-| Apple Silicon slow/unstable Chrome container | Give Docker ≥4 GB RAM |
+| Apple Silicon slow Chrome | Give Docker ≥4 GB RAM; image is `linux/amd64` |
 
 ```bash
 docker compose logs -f platform
-docker compose logs -f chrome
 curl -s http://localhost:8080/api/bots
 curl -s http://localhost:8080/api/runs
 ```
@@ -258,7 +269,7 @@ app/
   services/       # Run orchestration
   static/         # Web UI
 docs/examples/    # Minimal new-bot sample
-scripts/          # Block-rate bench helper
+scripts/          # Entrypoint + block-rate bench
 tests/
 docker-compose.yml
 Dockerfile
