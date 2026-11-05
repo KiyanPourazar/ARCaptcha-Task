@@ -220,9 +220,10 @@ ArCaptcha on `demo.arcaptcha.co` actively fingerprints Selenium. With the Docker
 **Approach used here (`DRIVER_MODE=uc`):**
 
 1. **SeleniumBase UC Mode** (undetected-chromedriver lineage): patch chromedriver, attach after Chrome starts, and `uc_click` the checkbox while chromedriver is briefly disconnected
-2. Keep classic stealth flags for the remote path (`BOT_STEALTH`, humanized delays, Tehran TZ in Compose)
-3. Prefer **headed/Headful** over headless for UC trials
-4. Persist `challenge_id` whenever obtained, and still report `blocked` / `failed` accurately
+2. When ArCaptcha opens the **slider puzzle**, compute the piece offset with image edge-correlation and drag `.draggable` into place
+3. Keep classic stealth flags for the remote path (`BOT_STEALTH`, humanized delays, Tehran TZ in Compose)
+4. Prefer **headed/Headful** over headless for UC trials
+5. Persist `challenge_id` whenever obtained, and still report `blocked` / `failed` accurately
 
 **How to run the lower-block path (desktop):**
 

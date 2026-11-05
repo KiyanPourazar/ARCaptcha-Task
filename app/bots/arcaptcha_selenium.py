@@ -146,10 +146,7 @@ class ArCaptchaSeleniumBot(BrowserBot):
                         pass
 
                 sb.uc_click("#input-checkbox", reconnect_time=6)
-
-                challenge_id, solved_visual = self._uc_wait_for_challenge(
-                    sb, context.captcha_wait_timeout
-                )
+                challenge_id, solved_visual = self._uc_complete_captcha(sb, context)
                 if self._uc_is_blocked(sb):
                     return BotResult(
                         outcome=RunOutcome.BLOCKED,
@@ -241,39 +238,68 @@ class ArCaptchaSeleniumBot(BrowserBot):
             return False
         return "blocked" in text and "robot" in text
 
-    def _uc_wait_for_challenge(self, sb, timeout: int) -> tuple[str | None, bool]:
-        deadline = time.time() + timeout
+    def _uc_complete_captcha(self, sb, context: BotContext) -> tuple[str | None, bool]:
+        """Wait for checkbox pass or slider puzzle; only treat checkmark as solved."""
+        from app.bots.puzzle import solve_arcaptcha_slider
+
+        deadline = time.time() + context.captcha_wait_timeout
         last_token: str | None = None
-        solved_visual = False
+        puzzle_attempted = False
+
         while time.time() < deadline:
             if self._uc_is_blocked(sb):
-                return last_token, solved_visual
-            info = sb.execute_script(
-                """
-                const t = document.getElementById('arcaptcha-token');
-                const img = document.getElementById('checked-in-the-box');
-                let tok = null;
-                try {
-                  for (const id of Object.keys((window.arcaptcha || {}).widgets || {})) {
-                    const v = window.arcaptcha.getArcToken(id);
-                    if (v) tok = v;
-                  }
-                } catch (e) {}
-                const imgShown = !!(img && getComputedStyle(img).display !== 'none'
-                  && getComputedStyle(img).visibility !== 'hidden');
-                return { token: (t && t.value) || tok || null, imgShown };
-                """
-            ) or {}
-            token = info.get("token")
-            if token:
-                last_token = token
-            if info.get("imgShown") and token:
-                return token, True
-            # Keep the first challenge_id even if visual checkmark never appears.
-            if token and time.time() + 8 >= deadline:
-                return token, False
+                return last_token, False
+
+            state = self._uc_captcha_state(sb)
+            if state.get("token"):
+                last_token = state["token"]
+            if state.get("img_shown") and state.get("token"):
+                return state["token"], True
+
+            # Puzzle modal opened — solve once, then keep waiting for checkmark.
+            if state.get("puzzle") and not puzzle_attempted:
+                puzzle_attempted = True
+                try:
+                    sb.sleep(0.8 if context.humanize_delays else 0.2)
+                    result = solve_arcaptcha_slider(sb, humanize=context.humanize_delays)
+                    logger.info("Puzzle solve result: %s", result)
+                    sb.sleep(1.5 if context.humanize_delays else 0.5)
+                except Exception:  # noqa: BLE001
+                    logger.exception("UC puzzle solve failed")
+
             sb.sleep(0.35)
-        return last_token, solved_visual
+
+        return last_token, False
+
+    @staticmethod
+    def _uc_captcha_state(sb) -> dict:
+        try:
+            return (
+                sb.execute_script(
+                    """
+                    const t = document.getElementById('arcaptcha-token');
+                    const img = document.getElementById('checked-in-the-box');
+                    let tok = null;
+                    try {
+                      for (const id of Object.keys((window.arcaptcha || {}).widgets || {})) {
+                        const v = window.arcaptcha.getArcToken(id);
+                        if (v) tok = v;
+                      }
+                    } catch (e) {}
+                    const imgShown = !!(img && getComputedStyle(img).display !== 'none'
+                      && getComputedStyle(img).visibility !== 'hidden');
+                    const puzzle = !!document.querySelector('.arc-puzzle .draggable, #challenge .draggable');
+                    return {
+                      token: (t && t.value) || tok || null,
+                      img_shown: imgShown,
+                      puzzle
+                    };
+                    """
+                )
+                or {}
+            )
+        except Exception:  # noqa: BLE001
+            return {}
 
     @staticmethod
     def _uc_sync_token(sb, token: str) -> None:
@@ -438,6 +464,8 @@ class ArCaptchaSeleniumBot(BrowserBot):
 
     def _wait_for_challenge_id(self, driver: WebDriver, context: BotContext) -> str | None:
         deadline = time.time() + context.captcha_wait_timeout
+        last_token: str | None = None
+        puzzle_attempted = False
 
         while time.time() < deadline:
             if self._is_blocked(driver):
@@ -445,28 +473,53 @@ class ArCaptchaSeleniumBot(BrowserBot):
                     "ArCaptcha showed: Blocked! Are you robot? Please refresh the page and try again"
                 )
 
+            if not puzzle_attempted:
+                try:
+                    knobs = driver.find_elements(By.CSS_SELECTOR, ".draggable")
+                    if knobs:
+                        from app.bots.puzzle import solve_arcaptcha_slider
+
+                        puzzle_attempted = True
+                        human_pause(context.humanize_delays, 0.5, 1.0)
+                        solve_arcaptcha_slider(driver, humanize=context.humanize_delays)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Remote puzzle solve failed")
+                    puzzle_attempted = True
+
             token = self._extract_challenge_id(driver)
             if token:
-                return token
+                try:
+                    shown = driver.execute_script(
+                        """
+                        const img = document.getElementById('checked-in-the-box');
+                        return !!(img && getComputedStyle(img).display !== 'none');
+                        """
+                    )
+                except WebDriverException:
+                    shown = False
+                if shown:
+                    return token
+                last_token = token
 
-            if self._visual_challenge_open(driver):
-                # Give the demo a short chance to auto-pass; otherwise report blocked.
-                time.sleep(2.0)
+            if self._visual_challenge_open(driver) and puzzle_attempted:
+                time.sleep(1.0)
                 token = self._extract_challenge_id(driver)
                 if token:
-                    return token
+                    last_token = token
                 if self._is_blocked(driver):
                     raise CaptchaBlockedError("Blocked during visual challenge")
-                if self._visual_challenge_open(driver):
-                    raise CaptchaBlockedError(
-                        "Visual CAPTCHA challenge appeared and was not auto-solved"
-                    )
 
             time.sleep(0.35)
 
+        if last_token:
+            return last_token
         if self._is_blocked(driver):
             raise CaptchaBlockedError(
                 "Timed out after ArCaptcha block message appeared"
+            )
+        if self._visual_challenge_open(driver):
+            raise CaptchaBlockedError(
+                "Visual CAPTCHA challenge remained open and was not solved"
             )
         return None
 
@@ -628,10 +681,11 @@ class ArCaptchaSeleniumBot(BrowserBot):
 
     def _visual_challenge_open(self, driver: WebDriver) -> bool:
         script = """
+        const challenge = document.getElementById('challenge')
+          || document.querySelector('.arc-puzzle, .draggable');
+        if (challenge && challenge.offsetParent !== null) return true;
         const frames = Array.from(document.querySelectorAll('iframe'));
-        const challengeFrame = frames.some(f => (f.src || '').toLowerCase().includes('challenge'));
-        const overlay = document.querySelector('.arcaptcha-challenge, [class*="challenge-modal"]');
-        return Boolean(overlay || challengeFrame);
+        return frames.some(f => (f.src || '').toLowerCase().includes('challenge'));
         """
         try:
             return bool(driver.execute_script(script))
